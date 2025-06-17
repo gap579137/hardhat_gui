@@ -26,7 +26,9 @@ import {
   Center,
   Burger,
   NavLink,
-  TextInput
+  TextInput,
+  Modal,
+  Textarea
 } from '@mantine/core';
 import { useDisclosure } from '@mantine/hooks';
 import { notifications } from '@mantine/notifications';
@@ -74,6 +76,13 @@ function HardhatApp() {
   const [autoRefresh, setAutoRefresh] = useState(false);
   const [refreshInterval, setRefreshInterval] = useState(null);
   const [transactions, setTransactions] = useState([]);
+  const [isLoadingContracts, setIsLoadingContracts] = useState(false);
+  const [verifyModalOpened, setVerifyModalOpened] = useState(false);
+  const [verifyForm, setVerifyForm] = useState({
+    contractAddress: '',
+    constructorArgs: '',
+    contractName: ''
+  });
 
   // Load Tauri APIs dynamically
   useEffect(() => {
@@ -327,6 +336,7 @@ function HardhatApp() {
   const loadContracts = async () => {
     if (!currentProjectPath || !isTauri || !tauriApis.invoke) return;
     
+    setIsLoadingContracts(true);
     try {
       const contractsList = await tauriApis.invoke('list_contracts', { 
         projectPath: currentProjectPath 
@@ -334,6 +344,8 @@ function HardhatApp() {
       setContracts(contractsList);
     } catch (err) {
       console.error('Error loading contracts:', err);
+    } finally {
+      setIsLoadingContracts(false);
     }
   };
 
@@ -354,7 +366,18 @@ function HardhatApp() {
         message: 'All contracts compiled successfully',
         color: 'green',
       });
+      
+      // Wait a bit for artifacts to be written, then reload contracts
+      setManagementMessage('Updating contract status...');
+      await new Promise(resolve => setTimeout(resolve, 1000));
       await loadContracts(); // Reload to update compilation status
+      
+      notifications.show({
+        title: 'Contracts Updated',
+        message: 'Contract compilation status refreshed',
+        color: 'blue',
+      });
+      
     } catch (err) {
       setCompilationStatus({ success: false, message: err.toString() });
       notifications.show({
@@ -502,8 +525,8 @@ function HardhatApp() {
           </Paper>
         </SimpleGrid>
 
-        <Paper p="sm" withBorder style={{ backgroundColor: 'var(--mantine-color-green-0)' }}>
-          <Group justify="space-between" mb="xs">
+        <Paper p="sm" withBorder mb="sm">
+          <Group justify="space-between" mb="sm">
             <Text size="xs" fw={600}>RPC Endpoint</Text>
             <Code size="xs">http://localhost:8545</Code>
           </Group>
@@ -515,20 +538,47 @@ function HardhatApp() {
 
         <Paper p="sm" withBorder>
           <Text size="xs" fw={600} mb="xs">Available Hardhat Tasks:</Text>
-          <Group gap="xs">
-            <Button size="xs" variant="subtle" color="blue">
+          <Group gap="xs" mb="xs">
+            <Button 
+              size="xs" 
+              variant="subtle" 
+              color="blue"
+              onClick={() => handleHardhatTask('clean')}
+              disabled={!currentProjectPath}
+            >
               Clean
             </Button>
-            <Button size="xs" variant="subtle" color="purple">
+            <Button 
+              size="xs" 
+              variant="subtle" 
+              color="purple"
+              onClick={() => handleHardhatTask('flatten')}
+              disabled={!currentProjectPath}
+            >
               Flatten
             </Button>
-            <Button size="xs" variant="subtle" color="orange">
+            <Button 
+              size="xs" 
+              variant="subtle" 
+              color="orange"
+              onClick={() => handleHardhatTask('coverage')}
+              disabled={!currentProjectPath}
+            >
               Coverage
             </Button>
-            <Button size="xs" variant="subtle" color="teal">
-              Verify
+            <Button 
+              size="xs" 
+              variant="subtle" 
+              color="teal"
+              onClick={() => handleHardhatTask('verify')}
+              disabled={!currentProjectPath}
+            >
+              Verify Contract
             </Button>
           </Group>
+          <Text size="xs" c="dimmed">
+            💡 Deploy contracts first to get addresses for verification
+          </Text>
         </Paper>
       </Card>
     );
@@ -581,10 +631,20 @@ function HardhatApp() {
                   {account.shortAddress}
                 </Text>
                 <Group gap="xs">
-                  <Button size="xs" variant="subtle" color="blue">
+                  <Button 
+                    size="xs" 
+                    variant="subtle" 
+                    color="blue"
+                    onClick={() => handleCopyAddress(account.address)}
+                  >
                     Copy
                   </Button>
-                  <Button size="xs" variant="subtle" color="orange">
+                  <Button 
+                    size="xs" 
+                    variant="subtle" 
+                    color="orange"
+                    onClick={() => handleSendEth(account.address)}
+                  >
                     Send
                   </Button>
                 </Group>
@@ -731,14 +791,17 @@ function HardhatApp() {
         <Card shadow="sm" padding="md" radius="md" withBorder>
           <Group justify="space-between" mb="sm">
             <Title order={4} c="purple">📋 Smart Contracts</Title>
-            <Badge color="purple" variant="light">{contracts.length} contracts</Badge>
+            <Group gap="xs">
+              {isLoadingContracts && <Loader size="xs" />}
+              <Badge color="purple" variant="light">{contracts.length} contracts</Badge>
+            </Group>
           </Group>
           
           {!currentProjectPath ? (
             <Text c="dimmed" ta="center">Select a Hardhat project to view contracts</Text>
           ) : (
             <Stack gap="md">
-              <Paper p="sm" withBorder style={{ backgroundColor: 'var(--mantine-color-gray-0)' }}>
+              <Paper p="sm" withBorder >
                 <Group justify="space-between" mb="sm">
                   <Text size="sm" fw={600}>Project Actions</Text>
                   <Text size="xs" c="dimmed">{currentProjectPath.split('/').pop()}</Text>
@@ -806,10 +869,20 @@ function HardhatApp() {
                         </Text>
                       )}
                       <Group gap="xs">
-                        <Button size="xs" variant="subtle" color="blue">
+                        <Button 
+                          size="xs" 
+                          variant="subtle" 
+                          color="blue"
+                          onClick={() => handleViewContract(contract)}
+                        >
                           View
                         </Button>
-                        <Button size="xs" variant="subtle" color="orange">
+                        <Button 
+                          size="xs" 
+                          variant="subtle" 
+                          color="orange"
+                          onClick={() => handleEditContract(contract)}
+                        >
                           Edit
                         </Button>
                       </Group>
@@ -866,6 +939,13 @@ function HardhatApp() {
                 {deploymentStatus.success ? "Deployed" : "Failed"}
               </Badge>
             </Group>
+            {deploymentStatus.success && (
+              <Paper p="xs" withBorder mb="sm" style={{ backgroundColor: 'var(--mantine-color-green-0)' }}>
+                <Text size="xs" fw={600} c="green">
+                  💡 Copy contract addresses from the output below to verify them on Etherscan
+                </Text>
+              </Paper>
+            )}
             <Code block size="xs" style={{ maxHeight: '200px', overflow: 'auto' }}>
               {deploymentStatus.message}
             </Code>
@@ -1089,6 +1169,143 @@ function HardhatApp() {
     );
   };
 
+  // Add missing functionality for buttons
+  const handleHardhatTask = async (taskName) => {
+    if (!currentProjectPath || !isTauri || !tauriApis.invoke) return;
+    
+    // Special handling for verify task
+    if (taskName === 'verify') {
+      setVerifyModalOpened(true);
+      return;
+    }
+    
+    try {
+      const result = await tauriApis.invoke('run_hardhat_task', { 
+        projectPath: currentProjectPath,
+        task: taskName,
+        args: []
+      });
+      notifications.show({
+        title: `${taskName} Task Completed`,
+        message: result.substring(0, 100) + (result.length > 100 ? '...' : ''),
+        color: 'green',
+      });
+    } catch (err) {
+      notifications.show({
+        title: `${taskName} Task Failed`,
+        message: err.toString(),
+        color: 'red',
+      });
+    }
+  };
+
+  const handleVerifyContract = async () => {
+    if (!currentProjectPath || !tauriApis.invoke || !verifyForm.contractAddress) {
+      notifications.show({
+        title: 'Verification Failed',
+        message: 'Please provide a contract address',
+        color: 'red',
+      });
+      return;
+    }
+
+    setIsManaging(true);
+    setManagementMessage('Verifying contract...');
+    
+    try {
+      const args = [verifyForm.contractAddress];
+      
+      // Add contract name if provided
+      if (verifyForm.contractName) {
+        args.push('--contract', verifyForm.contractName);
+      }
+      
+      // Add constructor arguments if provided
+      if (verifyForm.constructorArgs) {
+        // Split constructor args by comma and trim whitespace
+        const constructorArgs = verifyForm.constructorArgs
+          .split(',')
+          .map(arg => arg.trim())
+          .filter(arg => arg.length > 0);
+        
+        if (constructorArgs.length > 0) {
+          args.push('--constructor-args', ...constructorArgs);
+        }
+      }
+
+      const result = await tauriApis.invoke('run_hardhat_task', { 
+        projectPath: currentProjectPath,
+        task: 'verify',
+        args: args
+      });
+      
+      notifications.show({
+        title: 'Verification Successful',
+        message: 'Contract verified successfully',
+        color: 'green',
+      });
+      
+      setVerifyModalOpened(false);
+      setVerifyForm({ contractAddress: '', constructorArgs: '', contractName: '' });
+      
+    } catch (err) {
+      notifications.show({
+        title: 'Verification Failed',
+        message: err.toString(),
+        color: 'red',
+      });
+    } finally {
+      setIsManaging(false);
+      setManagementMessage('');
+    }
+  };
+
+  const handleCopyAddress = async (address) => {
+    if (navigator.clipboard) {
+      try {
+        await navigator.clipboard.writeText(address);
+        notifications.show({
+          title: 'Address Copied',
+          message: `${address.substring(0, 10)}... copied to clipboard`,
+          color: 'green',
+        });
+      } catch (err) {
+        notifications.show({
+          title: 'Copy Failed',
+          message: 'Failed to copy address to clipboard',
+          color: 'red',
+        });
+      }
+    }
+  };
+
+  const handleSendEth = (address) => {
+    // For now, just show a notification - in a real app you'd open a send dialog
+    notifications.show({
+      title: 'Send ETH',
+      message: `Send ETH feature would open for ${address.substring(0, 10)}...`,
+      color: 'blue',
+    });
+  };
+
+  const handleViewContract = (contract) => {
+    // For now, just show a notification - in a real app you'd open the contract file
+    notifications.show({
+      title: 'View Contract',
+      message: `Would open ${contract.name}.sol for viewing`,
+      color: 'blue',
+    });
+  };
+
+  const handleEditContract = (contract) => {
+    // For now, just show a notification - in a real app you'd open the contract in an editor
+    notifications.show({
+      title: 'Edit Contract',
+      message: `Would open ${contract.name}.sol for editing`,
+      color: 'blue',
+    });
+  };
+
   // Render current section
   const renderCurrentSection = () => {
     switch (activeSection) {
@@ -1124,11 +1341,72 @@ function HardhatApp() {
   }
 
   return (
-    <AppShell
-      header={{ height: 60 }}
-      navbar={{ width: 300, breakpoint: 'sm', collapsed: { mobile: !opened } }}
-      padding="md"
-    >
+    <>
+      {/* Contract Verification Modal */}
+      <Modal
+        opened={verifyModalOpened}
+        onClose={() => setVerifyModalOpened(false)}
+        title="🔍 Verify Contract on Etherscan"
+        size="md"
+      >
+        <Stack gap="md">
+          <Text size="sm" c="dimmed">
+            Enter the contract details to verify on Etherscan. Make sure your contract is deployed and you have the correct address.
+          </Text>
+          
+          <TextInput
+            label="Contract Address"
+            placeholder="0x..."
+            value={verifyForm.contractAddress}
+            onChange={(e) => setVerifyForm(prev => ({ ...prev, contractAddress: e.target.value }))}
+            required
+            description="The deployed contract address to verify"
+          />
+          
+          <TextInput
+            label="Contract Name (Optional)"
+            placeholder="MyContract"
+            value={verifyForm.contractName}
+            onChange={(e) => setVerifyForm(prev => ({ ...prev, contractName: e.target.value }))}
+            description="Specify if you have multiple contracts with the same name"
+          />
+          
+          <Textarea
+            label="Constructor Arguments (Optional)"
+            placeholder="arg1, arg2, arg3"
+            value={verifyForm.constructorArgs}
+            onChange={(e) => setVerifyForm(prev => ({ ...prev, constructorArgs: e.target.value }))}
+            description="Comma-separated constructor arguments used when deploying"
+            minRows={2}
+          />
+          
+          <Group justify="flex-end" gap="sm">
+            <Button
+              variant="subtle"
+              onClick={() => {
+                setVerifyModalOpened(false);
+                setVerifyForm({ contractAddress: '', constructorArgs: '', contractName: '' });
+              }}
+            >
+              Cancel
+            </Button>
+            <Button
+              onClick={handleVerifyContract}
+              disabled={!verifyForm.contractAddress || isManaging}
+              loading={isManaging}
+              leftSection="🔍"
+            >
+              Verify Contract
+            </Button>
+          </Group>
+        </Stack>
+      </Modal>
+
+      <AppShell
+        header={{ height: 60 }}
+        navbar={{ width: 300, breakpoint: 'sm', collapsed: { mobile: !opened } }}
+        padding="md"
+      >
       <AppShell.Header>
         <Group h="100%" px="md" justify="space-between">
           <Group>
@@ -1216,6 +1494,7 @@ function HardhatApp() {
         </Stack>
       </AppShell.Main>
     </AppShell>
+    </>
   );
 }
 

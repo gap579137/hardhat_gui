@@ -309,17 +309,30 @@ async fn list_contracts(project_path: String) -> Result<Vec<ContractInfo>, Strin
             let size = entry.metadata().ok().map(|m| m.len());
             
             // Check if contract is compiled by looking for artifacts
+            // Hardhat creates artifacts at: artifacts/contracts/{filename.sol}/{ContractName}.json
             let artifacts_path = Path::new(&project_path)
                 .join("artifacts")
                 .join("contracts")
                 .join(path.file_name().unwrap())
-                .join(format!("{}.sol", name))
                 .join(format!("{}.json", name));
+            
+            // Also check for dbg.json which is sometimes created
+            let artifacts_dbg_path = Path::new(&project_path)
+                .join("artifacts")
+                .join("contracts")
+                .join(path.file_name().unwrap())
+                .join(format!("{}.dbg.json", name));
+            
+            let is_compiled = artifacts_path.exists() || artifacts_dbg_path.exists();
+            
+            // Debug logging
+            println!("Contract: {}, Artifacts path: {:?}, Exists: {}", 
+                name, artifacts_path, is_compiled);
             
             contracts.push(ContractInfo {
                 name,
                 path: path.to_string_lossy().to_string(),
-                compiled: artifacts_path.exists(),
+                compiled: is_compiled,
                 size,
             });
         }
