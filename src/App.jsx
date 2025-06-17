@@ -1,23 +1,119 @@
 import { useEffect, useState } from 'react';
 import { ethers } from 'ethers';
-import { invoke } from '@tauri-apps/api/core';
-import { open } from '@tauri-apps/plugin-dialog';
+import {
+  MantineProvider,
+  ColorSchemeScript,
+  AppShell,
+  Group,
+  Title,
+  Button,
+  Card,
+  Text,
+  Grid,
+  Badge,
+  Paper,
+  Stack,
+  Code,
+  Notification,
+  Loader,
+  ActionIcon,
+  useMantineColorScheme,
+  Container,
+  Box,
+  Alert,
+  Flex,
+  SimpleGrid,
+  Center,
+  Burger,
+  NavLink,
+  TextInput
+} from '@mantine/core';
+import { useDisclosure } from '@mantine/hooks';
+import { notifications } from '@mantine/notifications';
+import { Notifications } from '@mantine/notifications';
 import './App.css';
 
-function App() {
+// Check if we're running in Tauri
+const isTauri = typeof window !== 'undefined' && window.__TAURI_INTERNALS__;
+
+// Theme toggle component
+function ThemeToggle() {
+  const { colorScheme, toggleColorScheme } = useMantineColorScheme();
+  
+  return (
+    <ActionIcon
+      onClick={() => toggleColorScheme()}
+      variant="default"
+      size="xl"
+      aria-label="Toggle color scheme"
+    >
+      {colorScheme === 'dark' ? '☀️' : '🌙'}
+    </ActionIcon>
+  );
+}
+
+function HardhatApp() {
   const [accounts, setAccounts] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [networkInfo, setNetworkInfo] = useState(null);
   const [hardhatStatus, setHardhatStatus] = useState(null);
   const [selectedProjectPath, setSelectedProjectPath] = useState('');
+  const [currentProjectPath, setCurrentProjectPath] = useState(''); // Track the active project path
   const [isManaging, setIsManaging] = useState(false);
   const [managementMessage, setManagementMessage] = useState('');
+  const [tauriApis, setTauriApis] = useState({ invoke: null, open: null });
+  const [opened, { toggle }] = useDisclosure();
+  const [activeSection, setActiveSection] = useState('management');
+  const [contracts, setContracts] = useState([]);
+  const [compilationStatus, setCompilationStatus] = useState(null);
+  const [testResults, setTestResults] = useState(null);
+  const [deploymentStatus, setDeploymentStatus] = useState(null);
+  const [consoleOutput, setConsoleOutput] = useState([]);
+  const [consoleInput, setConsoleInput] = useState('');
+  const [autoRefresh, setAutoRefresh] = useState(false);
+  const [refreshInterval, setRefreshInterval] = useState(null);
+  const [transactions, setTransactions] = useState([]);
+
+  // Load Tauri APIs dynamically
+  useEffect(() => {
+    const loadTauriApis = async () => {
+      if (isTauri) {
+        try {
+          const { invoke } = await import('@tauri-apps/api/core');
+          const { open } = await import('@tauri-apps/plugin-dialog');
+          setTauriApis({ invoke, open });
+        } catch (error) {
+          console.warn('Failed to import Tauri APIs:', error);
+        }
+      }
+    };
+    
+    loadTauriApis();
+  }, []);
 
   const checkHardhatStatus = async (projectPath = null) => {
+    if (!isTauri || !tauriApis.invoke) {
+      setHardhatStatus({
+        installed: false,
+        version: null,
+        project_detected: false,
+        project_path: null,
+        network_running: false
+      });
+      return null;
+    }
+
     try {
-      const status = await invoke('check_hardhat_status', { projectPath });
+      const status = await tauriApis.invoke('check_hardhat_status', { projectPath });
       setHardhatStatus(status);
+      
+      // Update current project path if project is detected
+      if (status?.project_detected && status?.project_path) {
+        setCurrentProjectPath(status.project_path);
+        setSelectedProjectPath(status.project_path);
+      }
+      
       return status;
     } catch (err) {
       console.error('Error checking Hardhat status:', err);
@@ -31,10 +127,8 @@ function App() {
       setLoading(true);
       setError(null);
       
-      // Connect to local Hardhat network
       const provider = new ethers.JsonRpcProvider("http://localhost:8545");
       
-      // Get network info
       const network = await provider.getNetwork();
       const blockNumber = await provider.getBlockNumber();
       
@@ -44,10 +138,10 @@ function App() {
         blockNumber: blockNumber
       });
       
-      // Get accounts and balances
       const accountAddresses = await provider.listAccounts();
       const accountsWithBalances = await Promise.all(
-        accountAddresses.map(async (address) => {
+        accountAddresses.map(async (account) => {
+          const address = typeof account === 'string' ? account : account.address;
           const balance = await provider.getBalance(address);
           return {
             address: address,
@@ -67,17 +161,31 @@ function App() {
   };
 
   const handleInstallHardhat = async () => {
+    if (!isTauri || !tauriApis.invoke) {
+      setError('Hardhat installation requires the desktop app');
+      return;
+    }
+
     setIsManaging(true);
     setManagementMessage('Installing Hardhat globally...');
     
     try {
-      const result = await invoke('install_hardhat');
-      setManagementMessage(result);
+      const result = await tauriApis.invoke('install_hardhat');
+      notifications.show({
+        title: 'Installation Complete',
+        message: result,
+        color: 'green',
+      });
       setTimeout(() => {
         checkHardhatStatus();
         setManagementMessage('');
       }, 2000);
     } catch (err) {
+      notifications.show({
+        title: 'Installation Failed',
+        message: err.toString(),
+        color: 'red',
+      });
       setManagementMessage(`Installation failed: ${err}`);
     } finally {
       setIsManaging(false);
@@ -85,15 +193,24 @@ function App() {
   };
 
   const handleSelectProject = async () => {
+    if (!isTauri || !tauriApis.open) {
+      setError('Project selection requires the desktop app');
+      return;
+    }
+
     try {
-      const selected = await open({
+      const selected = await tauriApis.open({
         directory: true,
         title: 'Select Hardhat Project Directory'
       });
       
       if (selected) {
         setSelectedProjectPath(selected);
-        await checkHardhatStatus(selected);
+        const status = await checkHardhatStatus(selected);
+        // If project is detected, keep the selected path for future operations
+        if (status?.project_detected) {
+          console.log('Project detected at:', selected);
+        }
       }
     } catch (err) {
       setError(`Failed to select directory: ${err}`);
@@ -101,6 +218,11 @@ function App() {
   };
 
   const handleCreateProject = async () => {
+    if (!isTauri || !tauriApis.invoke) {
+      setError('Project creation requires the desktop app');
+      return;
+    }
+
     if (!selectedProjectPath) {
       setError('Please select a directory first');
       return;
@@ -110,15 +232,24 @@ function App() {
     setManagementMessage('Creating new Hardhat project...');
     
     try {
-      const result = await invoke('create_hardhat_project', { 
+      const result = await tauriApis.invoke('create_hardhat_project', { 
         projectPath: selectedProjectPath 
       });
-      setManagementMessage(result);
-      setTimeout(() => {
-        checkHardhatStatus(selectedProjectPath);
+      notifications.show({
+        title: 'Project Created',
+        message: result,
+        color: 'green',
+      });
+      setTimeout(async () => {
+        await checkHardhatStatus(selectedProjectPath);
         setManagementMessage('');
       }, 2000);
     } catch (err) {
+      notifications.show({
+        title: 'Project Creation Failed',
+        message: err.toString(),
+        color: 'red',
+      });
       setManagementMessage(`Project creation failed: ${err}`);
     } finally {
       setIsManaging(false);
@@ -126,212 +257,977 @@ function App() {
   };
 
   const handleStartNetwork = async () => {
-    if (!hardhatStatus?.project_path) {
+    if (!isTauri || !tauriApis.invoke) {
+      setError('Network management requires the desktop app');
+      return;
+    }
+
+    const projectPath = currentProjectPath || hardhatStatus?.project_path;
+    if (!projectPath) {
       setError('No Hardhat project detected');
       return;
     }
 
+    console.log('Starting network for project at:', projectPath);
     setIsManaging(true);
     setManagementMessage('Starting Hardhat network...');
     
     try {
-      const result = await invoke('start_hardhat_network', { 
-        projectPath: hardhatStatus.project_path 
+      const result = await tauriApis.invoke('start_hardhat_network', { 
+        projectPath: projectPath 
       });
-      setManagementMessage(result);
-      setTimeout(() => {
-        checkHardhatStatus(hardhatStatus.project_path);
-        loadBlockchainData();
+      notifications.show({
+        title: 'Network Started',
+        message: result,
+        color: 'green',
+      });
+      setTimeout(async () => {
+        console.log('Checking status after network start for:', projectPath);
+        await checkHardhatStatus(projectPath);
+        await loadBlockchainData();
         setManagementMessage('');
       }, 3000);
     } catch (err) {
-      setManagementMessage(`Failed to start network: ${err}`);
+      notifications.show({
+        title: 'Network Start Failed',
+        message: err.toString(),
+        color: 'red',
+      });
+      setManagementMessage(`Network start failed: ${err}`);
     } finally {
       setIsManaging(false);
     }
   };
 
   const handleRefresh = async () => {
-    await checkHardhatStatus(selectedProjectPath || null);
-    if (hardhatStatus?.network_running) {
-      await loadBlockchainData();
+    // Use the current project path if available, prioritizing the tracked current path
+    const projectPath = currentProjectPath || hardhatStatus?.project_path || selectedProjectPath || null;
+    console.log('Refreshing with project path:', projectPath);
+    await checkHardhatStatus(projectPath);
+    await loadBlockchainData();
+  };
+
+  const toggleAutoRefresh = () => {
+    if (autoRefresh) {
+      // Stop auto-refresh
+      if (refreshInterval) {
+        clearInterval(refreshInterval);
+        setRefreshInterval(null);
+      }
+      setAutoRefresh(false);
+    } else {
+      // Start auto-refresh every 10 seconds
+      const interval = setInterval(handleRefresh, 10000);
+      setRefreshInterval(interval);
+      setAutoRefresh(true);
     }
   };
 
+  // Load contracts when project path changes
+  const loadContracts = async () => {
+    if (!currentProjectPath || !isTauri || !tauriApis.invoke) return;
+    
+    try {
+      const contractsList = await tauriApis.invoke('list_contracts', { 
+        projectPath: currentProjectPath 
+      });
+      setContracts(contractsList);
+    } catch (err) {
+      console.error('Error loading contracts:', err);
+    }
+  };
+
+  // Hardhat-specific functions
+  const handleCompileContracts = async () => {
+    if (!currentProjectPath || !isTauri || !tauriApis.invoke) return;
+    
+    setIsManaging(true);
+    setManagementMessage('Compiling contracts...');
+    
+    try {
+      const result = await tauriApis.invoke('compile_contracts', { 
+        projectPath: currentProjectPath 
+      });
+      setCompilationStatus({ success: true, message: result });
+      notifications.show({
+        title: 'Compilation Successful',
+        message: 'All contracts compiled successfully',
+        color: 'green',
+      });
+      await loadContracts(); // Reload to update compilation status
+    } catch (err) {
+      setCompilationStatus({ success: false, message: err.toString() });
+      notifications.show({
+        title: 'Compilation Failed',
+        message: err.toString(),
+        color: 'red',
+      });
+    } finally {
+      setIsManaging(false);
+      setManagementMessage('');
+    }
+  };
+
+  const handleRunTests = async () => {
+    if (!currentProjectPath || !isTauri || !tauriApis.invoke) return;
+    
+    setIsManaging(true);
+    setManagementMessage('Running tests...');
+    
+    try {
+      const result = await tauriApis.invoke('run_tests', { 
+        projectPath: currentProjectPath 
+      });
+      setTestResults({ success: true, message: result });
+      notifications.show({
+        title: 'Tests Completed',
+        message: 'All tests passed successfully',
+        color: 'green',
+      });
+    } catch (err) {
+      setTestResults({ success: false, message: err.toString() });
+      notifications.show({
+        title: 'Tests Failed',
+        message: 'Some tests failed',
+        color: 'red',
+      });
+    } finally {
+      setIsManaging(false);
+      setManagementMessage('');
+    }
+  };
+
+  const handleDeployContracts = async () => {
+    if (!currentProjectPath || !isTauri || !tauriApis.invoke) return;
+    
+    setIsManaging(true);
+    setManagementMessage('Deploying contracts...');
+    
+    try {
+      const result = await tauriApis.invoke('deploy_contracts', { 
+        projectPath: currentProjectPath 
+      });
+      setDeploymentStatus({ success: true, message: result });
+      notifications.show({
+        title: 'Deployment Successful',
+        message: 'Contracts deployed successfully',
+        color: 'green',
+      });
+    } catch (err) {
+      setDeploymentStatus({ success: false, message: err.toString() });
+      notifications.show({
+        title: 'Deployment Failed',
+        message: err.toString(),
+        color: 'red',
+      });
+    } finally {
+      setIsManaging(false);
+      setManagementMessage('');
+    }
+  };
+
+  // Cleanup interval on unmount
+  useEffect(() => {
+    return () => {
+      if (refreshInterval) {
+        clearInterval(refreshInterval);
+      }
+    };
+  }, [refreshInterval]);
+
+  // Load contracts when project changes
+  useEffect(() => {
+    if (currentProjectPath) {
+      loadContracts();
+    }
+  }, [currentProjectPath, tauriApis.invoke]);
+
   useEffect(() => {
     const initializeApp = async () => {
-      await checkHardhatStatus();
-      if (hardhatStatus?.network_running) {
-        await loadBlockchainData();
+      if (isTauri) {
+        await checkHardhatStatus();
+        if (hardhatStatus?.network_running) {
+          await loadBlockchainData();
+        } else {
+          setLoading(false);
+        }
       } else {
-        setLoading(false);
+        await loadBlockchainData();
       }
     };
     
+    if (isTauri && !tauriApis.invoke) {
+      return;
+    }
+    
     initializeApp();
-  }, []);
+  }, [tauriApis.invoke, hardhatStatus?.network_running]);
+
+  // Network Information Panel
+  const renderNetworkInfo = () => {
+    if (!networkInfo) {
+      return (
+        <Card shadow="sm" padding="md" radius="md" withBorder>
+          <Group justify="space-between" mb="sm">
+            <Title order={4} c="blue">📡 Network Information</Title>
+            <Badge color="red" variant="filled">Disconnected</Badge>
+          </Group>
+          <Text c="dimmed" ta="center">No network connection detected</Text>
+          <Text size="xs" c="dimmed" ta="center" mt="xs">
+            Make sure Hardhat network is running on localhost:8545
+          </Text>
+        </Card>
+      );
+    }
+
+    return (
+      <Card shadow="sm" padding="md" radius="md" withBorder>
+        <Group justify="space-between" mb="sm">
+          <Title order={4} c="blue">📡 Network Information</Title>
+          <Badge color="green" variant="filled">Connected</Badge>
+        </Group>
+        
+        <SimpleGrid cols={{ base: 1, sm: 3 }} spacing="md" mb="md">
+          <Paper p="md" withBorder ta="center">
+            <Text size="xs" fw={600} tt="uppercase" c="dimmed" mb="xs">Network</Text>
+            <Text fw={700} ff="monospace">{networkInfo.name || 'Hardhat Local'}</Text>
+          </Paper>
+          <Paper p="md" withBorder ta="center">
+            <Text size="xs" fw={600} tt="uppercase" c="dimmed" mb="xs">Chain ID</Text>
+            <Text fw={700} ff="monospace">{networkInfo.chainId}</Text>
+          </Paper>
+          <Paper p="md" withBorder ta="center">
+            <Text size="xs" fw={600} tt="uppercase" c="dimmed" mb="xs">Block Number</Text>
+            <Text fw={700} ff="monospace">{networkInfo.blockNumber}</Text>
+          </Paper>
+        </SimpleGrid>
+
+        <Paper p="sm" withBorder style={{ backgroundColor: 'var(--mantine-color-green-0)' }}>
+          <Group justify="space-between" mb="xs">
+            <Text size="xs" fw={600}>RPC Endpoint</Text>
+            <Code size="xs">http://localhost:8545</Code>
+          </Group>
+          <Group justify="space-between">
+            <Text size="xs" fw={600}>Gas Price</Text>
+            <Text size="xs" c="dimmed">Auto (Hardhat Network)</Text>
+          </Group>
+        </Paper>
+
+        <Paper p="sm" withBorder>
+          <Text size="xs" fw={600} mb="xs">Available Hardhat Tasks:</Text>
+          <Group gap="xs">
+            <Button size="xs" variant="subtle" color="blue">
+              Clean
+            </Button>
+            <Button size="xs" variant="subtle" color="purple">
+              Flatten
+            </Button>
+            <Button size="xs" variant="subtle" color="orange">
+              Coverage
+            </Button>
+            <Button size="xs" variant="subtle" color="teal">
+              Verify
+            </Button>
+          </Group>
+        </Paper>
+      </Card>
+    );
+  };
+
+  // Accounts Panel
+  const renderAccounts = () => {
+    if (accounts.length === 0) {
+      return (
+        <Card shadow="sm" padding="md" radius="md" withBorder>
+          <Group justify="space-between" mb="sm">
+            <Title order={4} c="green">💰 Local Accounts</Title>
+            <Badge color="red" variant="light">No accounts</Badge>
+          </Group>
+          <Text c="dimmed" ta="center">No accounts detected</Text>
+          <Text size="xs" c="dimmed" ta="center" mt="xs">
+            Start Hardhat network to see test accounts
+          </Text>
+        </Card>
+      );
+    }
+
+    const totalBalance = accounts.reduce((sum, account) => sum + parseFloat(account.balance), 0);
+
+    return (
+      <Card shadow="sm" padding="md" radius="md" withBorder>
+        <Group justify="space-between" mb="sm">
+          <Title order={4} c="green">💰 Local Accounts ({accounts.length})</Title>
+          <Badge color="green" variant="light">
+            Total: {totalBalance.toFixed(2)} ETH
+          </Badge>
+        </Group>
+        
+        <SimpleGrid cols={{ base: 1, sm: 2 }} spacing="md">
+          {accounts.map((account, index) => (
+            <Paper key={account.address} p="md" withBorder>
+              <Group justify="space-between" mb="sm">
+                <Badge color="green" variant="filled" size="sm">
+                  #{index}
+                </Badge>
+                <Text fw={700} size="md" c="orange">
+                  {parseFloat(account.balance).toFixed(4)} ETH
+                </Text>
+              </Group>
+              <Box mb="xs">
+                <Code block size="xs">{account.address}</Code>
+              </Box>
+              <Group justify="space-between" mt="xs">
+                <Text c="dimmed" size="xs">
+                  {account.shortAddress}
+                </Text>
+                <Group gap="xs">
+                  <Button size="xs" variant="subtle" color="blue">
+                    Copy
+                  </Button>
+                  <Button size="xs" variant="subtle" color="orange">
+                    Send
+                  </Button>
+                </Group>
+              </Group>
+            </Paper>
+          ))}
+        </SimpleGrid>
+      </Card>
+    );
+  };
 
   // Hardhat Management Panel
-  const renderHardhatManagement = () => (
-    <div className="hardhat-management">
-      <h3>🔨 Hardhat Management</h3>
+  const renderHardhatManagement = () => {
+    if (!isTauri) {
+      return (
+        <Card shadow="sm" padding="lg" radius="md" withBorder mb="xl">
+          <Title order={3} c="orange" mb="md">🔨 Hardhat Management</Title>
+          <Alert variant="light" color="yellow" title="Browser Mode">
+            <Text size="sm">
+              You're running in browser mode. For full Hardhat management features, please use the desktop app.
+              You can still view blockchain data if you have a Hardhat network running on localhost:8545.
+            </Text>
+          </Alert>
+        </Card>
+      );
+    }
+
+    return (
+      <Card shadow="sm" padding="md" radius="md" withBorder mb="lg">
+        <Title order={4} c="orange" mb="sm">🔨 Hardhat Management</Title>
+        
+        <SimpleGrid cols={{ base: 1, sm: 3 }} spacing="xs" mb="sm">
+          <Paper 
+            p="sm" 
+            withBorder 
+            style={{ 
+              borderLeft: `3px solid var(--mantine-color-${hardhatStatus?.installed ? 'green' : 'yellow'}-6)` 
+            }}
+          >
+            <Text size="xs" fw={600} tt="uppercase" c="dimmed" mb={4}>Installation</Text>
+            <Text size="xs" ff="monospace">
+              {hardhatStatus?.installed ? `✅ Installed ${hardhatStatus.version || ''}` : '❌ Not Installed'}
+            </Text>
+          </Paper>
+          
+          <Paper 
+            p="sm" 
+            withBorder 
+            style={{ 
+              borderLeft: `3px solid var(--mantine-color-${hardhatStatus?.project_detected ? 'green' : 'yellow'}-6)` 
+            }}
+          >
+            <Text size="xs" fw={600} tt="uppercase" c="dimmed" mb={4}>Project</Text>
+            <Text size="xs" ff="monospace">
+              {hardhatStatus?.project_detected ? '✅ Detected' : '❌ No Project'}
+            </Text>
+          </Paper>
+          
+          <Paper 
+            p="sm" 
+            withBorder 
+            style={{ 
+              borderLeft: `3px solid var(--mantine-color-${hardhatStatus?.network_running ? 'green' : 'yellow'}-6)` 
+            }}
+          >
+            <Text size="xs" fw={600} tt="uppercase" c="dimmed" mb={4}>Network</Text>
+            <Text size="xs" ff="monospace">
+              {hardhatStatus?.network_running ? '✅ Running' : '❌ Not Running'}
+            </Text>
+          </Paper>
+        </SimpleGrid>
+
+        {managementMessage && (
+          <Notification color="blue" title="Status" onClose={() => setManagementMessage('')} mb="sm">
+            <Group gap="xs">
+              {isManaging && <Loader size="xs" />}
+              <Text size="sm">{managementMessage}</Text>
+            </Group>
+          </Notification>
+        )}
+
+        <Group gap="xs" mb="sm">
+          {!hardhatStatus?.installed && (
+            <Button 
+              onClick={handleInstallHardhat} 
+              disabled={isManaging}
+              color="green"
+              leftSection="📦"
+              size="xs"
+            >
+              Install Hardhat
+            </Button>
+          )}
+
+          <Button 
+            onClick={handleSelectProject} 
+            disabled={isManaging}
+            color="blue"
+            leftSection="📁"
+            size="xs"
+          >
+            Select Project Directory
+          </Button>
+
+          {selectedProjectPath && !hardhatStatus?.project_detected && (
+            <Button 
+              onClick={handleCreateProject} 
+              disabled={isManaging}
+              color="cyan"
+              leftSection="🆕"
+              size="xs"
+            >
+              Create Hardhat Project
+            </Button>
+          )}
+
+          {hardhatStatus?.project_detected && !hardhatStatus?.network_running && (
+            <Button 
+              onClick={handleStartNetwork} 
+              disabled={isManaging}
+              color="orange"
+              leftSection="🚀"
+              size="xs"
+            >
+              Start Network
+            </Button>
+          )}
+        </Group>
+
+        {selectedProjectPath && (
+          <Paper p="sm" withBorder>
+            <Text fw={600} mb={4} size="xs">Selected Path:</Text>
+            <Code block size="xs">{selectedProjectPath}</Code>
+          </Paper>
+        )}
+      </Card>
+    );
+  };
+
+  // Contracts Panel
+  const renderContracts = () => {
+    return (
+      <Stack gap="md">
+        <Card shadow="sm" padding="md" radius="md" withBorder>
+          <Group justify="space-between" mb="sm">
+            <Title order={4} c="purple">📋 Smart Contracts</Title>
+            <Badge color="purple" variant="light">{contracts.length} contracts</Badge>
+          </Group>
+          
+          {!currentProjectPath ? (
+            <Text c="dimmed" ta="center">Select a Hardhat project to view contracts</Text>
+          ) : (
+            <Stack gap="md">
+              <Paper p="sm" withBorder style={{ backgroundColor: 'var(--mantine-color-gray-0)' }}>
+                <Group justify="space-between" mb="sm">
+                  <Text size="sm" fw={600}>Project Actions</Text>
+                  <Text size="xs" c="dimmed">{currentProjectPath.split('/').pop()}</Text>
+                </Group>
+                <Group gap="xs">
+                  <Button 
+                    size="xs" 
+                    variant="light" 
+                    color="blue"
+                    onClick={handleCompileContracts}
+                    disabled={isManaging}
+                    leftSection="🔨"
+                  >
+                    Compile
+                  </Button>
+                  <Button 
+                    size="xs" 
+                    variant="light" 
+                    color="orange"
+                    onClick={handleRunTests}
+                    disabled={isManaging}
+                    leftSection="🧪"
+                  >
+                    Test
+                  </Button>
+                  <Button 
+                    size="xs" 
+                    variant="light" 
+                    color="green"
+                    onClick={handleDeployContracts}
+                    disabled={isManaging}
+                    leftSection="🚀"
+                  >
+                    Deploy
+                  </Button>
+                </Group>
+              </Paper>
+              
+              {contracts.length === 0 ? (
+                <Paper p="md" withBorder>
+                  <Text ta="center" c="dimmed">No contracts found</Text>
+                  <Text ta="center" size="xs" c="dimmed" mt="xs">
+                    Add .sol files to the contracts/ directory
+                  </Text>
+                </Paper>
+              ) : (
+                <SimpleGrid cols={{ base: 1, sm: 2 }} spacing="md">
+                  {contracts.map((contract, index) => (
+                    <Paper key={index} p="md" withBorder>
+                      <Group justify="space-between" mb="xs">
+                        <Text fw={600} size="sm">{contract.name}</Text>
+                        <Badge 
+                          color={contract.compiled ? "green" : "yellow"} 
+                          size="xs"
+                        >
+                          {contract.compiled ? "Compiled" : "Not Compiled"}
+                        </Badge>
+                      </Group>
+                      <Text size="xs" c="dimmed" mb="xs">
+                        {contract.path.replace(currentProjectPath + '/', '')}
+                      </Text>
+                      {contract.size && (
+                        <Text size="xs" c="dimmed" mb="sm">
+                          Size: {(contract.size / 1024).toFixed(1)} KB
+                        </Text>
+                      )}
+                      <Group gap="xs">
+                        <Button size="xs" variant="subtle" color="blue">
+                          View
+                        </Button>
+                        <Button size="xs" variant="subtle" color="orange">
+                          Edit
+                        </Button>
+                      </Group>
+                    </Paper>
+                  ))}
+                </SimpleGrid>
+              )}
+            </Stack>
+          )}
+        </Card>
+
+        {/* Compilation Status */}
+        {compilationStatus && (
+          <Card shadow="sm" padding="md" radius="md" withBorder>
+            <Group justify="space-between" mb="sm">
+              <Title order={5} c={compilationStatus.success ? "green" : "red"}>
+                🔨 Compilation Results
+              </Title>
+              <Badge color={compilationStatus.success ? "green" : "red"}>
+                {compilationStatus.success ? "Success" : "Failed"}
+              </Badge>
+            </Group>
+            <Code block size="xs" style={{ maxHeight: '200px', overflow: 'auto' }}>
+              {compilationStatus.message}
+            </Code>
+          </Card>
+        )}
+
+        {/* Test Results */}
+        {testResults && (
+          <Card shadow="sm" padding="md" radius="md" withBorder>
+            <Group justify="space-between" mb="sm">
+              <Title order={5} c={testResults.success ? "green" : "red"}>
+                🧪 Test Results
+              </Title>
+              <Badge color={testResults.success ? "green" : "red"}>
+                {testResults.success ? "Passed" : "Failed"}
+              </Badge>
+            </Group>
+            <Code block size="xs" style={{ maxHeight: '200px', overflow: 'auto' }}>
+              {testResults.message}
+            </Code>
+          </Card>
+        )}
+
+        {/* Deployment Status */}
+        {deploymentStatus && (
+          <Card shadow="sm" padding="md" radius="md" withBorder>
+            <Group justify="space-between" mb="sm">
+              <Title order={5} c={deploymentStatus.success ? "green" : "red"}>
+                🚀 Deployment Results
+              </Title>
+              <Badge color={deploymentStatus.success ? "green" : "red"}>
+                {deploymentStatus.success ? "Deployed" : "Failed"}
+              </Badge>
+            </Group>
+            <Code block size="xs" style={{ maxHeight: '200px', overflow: 'auto' }}>
+              {deploymentStatus.message}
+            </Code>
+          </Card>
+        )}
+      </Stack>
+    );
+  };
+
+  // Transactions Panel
+  const renderTransactions = () => {
+    return (
+      <Card shadow="sm" padding="md" radius="md" withBorder>
+        <Group justify="space-between" mb="sm">
+          <Title order={4} c="cyan">📜 Transaction History</Title>
+          <Badge color="blue" variant="light">{transactions.length} txns</Badge>
+        </Group>
+        
+        {transactions.length === 0 ? (
+          <Paper p="lg" withBorder>
+            <Text ta="center" c="dimmed">No transactions yet</Text>
+            <Text ta="center" size="xs" c="dimmed" mt="xs">
+              Transactions will appear here when you interact with contracts
+            </Text>
+          </Paper>
+        ) : (
+          <Stack gap="xs">
+            {transactions.slice(0, 10).map((tx, index) => (
+              <Paper key={index} p="sm" withBorder>
+                <Group justify="space-between" mb="xs">
+                  <Code size="xs">{tx.hash}</Code>
+                  <Badge color={tx.status === 'success' ? 'green' : 'red'} size="xs">
+                    {tx.status}
+                  </Badge>
+                </Group>
+                <Group justify="space-between">
+                  <Text size="xs" c="dimmed">
+                    From: {tx.from} → To: {tx.to}
+                  </Text>
+                  <Text size="xs" c="dimmed">
+                    {tx.value} ETH
+                  </Text>
+                </Group>
+              </Paper>
+            ))}
+            {transactions.length > 10 && (
+              <Text ta="center" size="xs" c="dimmed">
+                Showing latest 10 transactions
+              </Text>
+            )}
+          </Stack>
+        )}
+      </Card>
+    );
+  };
+
+  // Hardhat Console Panel
+  const renderHardhatConsole = () => {
+    const handleConsoleCommand = async () => {
+      if (!consoleInput.trim() || !currentProjectPath || !isTauri || !tauriApis.invoke) return;
       
-      <div className="status-grid">
-        <div className={`status-item ${hardhatStatus?.installed ? 'success' : 'warning'}`}>
-          <span className="status-label">Installation:</span>
-          <span className="status-value">
-            {hardhatStatus?.installed ? `✅ Installed ${hardhatStatus.version || ''}` : '❌ Not Installed'}
-          </span>
-        </div>
+      const command = consoleInput.trim();
+      setConsoleOutput(prev => [...prev, { type: 'input', content: `> ${command}` }]);
+      setConsoleInput('');
+      
+      try {
+        // Use the specialized console command function
+        const result = await tauriApis.invoke('run_hardhat_console_command', { 
+          projectPath: currentProjectPath,
+          command: command
+        });
+        setConsoleOutput(prev => [...prev, { type: 'output', content: result }]);
+      } catch (err) {
+        setConsoleOutput(prev => [...prev, { type: 'error', content: err.toString() }]);
+      }
+    };
+
+    return (
+      <Card shadow="sm" padding="md" radius="md" withBorder>
+        <Group justify="space-between" mb="sm">
+          <Title order={4} c="teal">⚡ Hardhat Console</Title>
+          <Group gap="xs">
+            <Button 
+              size="xs" 
+              variant="subtle" 
+              color="gray"
+              onClick={() => setConsoleOutput([])}
+            >
+              Clear
+            </Button>
+            <Badge color="teal" variant="light">Interactive</Badge>
+          </Group>
+        </Group>
         
-        <div className={`status-item ${hardhatStatus?.project_detected ? 'success' : 'warning'}`}>
-          <span className="status-label">Project:</span>
-          <span className="status-value">
-            {hardhatStatus?.project_detected ? '✅ Detected' : '❌ No Project'}
-          </span>
-        </div>
-        
-        <div className={`status-item ${hardhatStatus?.network_running ? 'success' : 'warning'}`}>
-          <span className="status-label">Network:</span>
-          <span className="status-value">
-            {hardhatStatus?.network_running ? '✅ Running' : '❌ Not Running'}
-          </span>
-        </div>
-      </div>
-
-      {managementMessage && (
-        <div className="management-message">
-          {isManaging && <span className="spinner">⏳</span>}
-          {managementMessage}
-        </div>
-      )}
-
-      <div className="management-actions">
-        {!hardhatStatus?.installed && (
-          <button 
-            onClick={handleInstallHardhat} 
-            disabled={isManaging}
-            className="action-btn install-btn"
-          >
-            📦 Install Hardhat
-          </button>
+        {!currentProjectPath ? (
+          <Text c="dimmed" ta="center">Select a Hardhat project to use console</Text>
+        ) : (
+          <Stack gap="md">
+            <Paper 
+              p="md" 
+              withBorder 
+              style={{ 
+                backgroundColor: 'var(--mantine-color-dark-8)',
+                color: 'var(--mantine-color-green-4)',
+                fontFamily: 'monospace',
+                fontSize: '12px',
+                minHeight: '300px',
+                maxHeight: '400px',
+                overflow: 'auto'
+              }}
+            >
+              {consoleOutput.length === 0 ? (
+                <Text c="dimmed" size="xs">
+                  Hardhat Console - Enter JavaScript code to interact with your contracts
+                  <br />
+                  Example: return await ethers.getSigners()
+                  <br />
+                  Use 'return' to see results, or just run code without return for side effects
+                </Text>
+              ) : (
+                <Stack gap="xs">
+                  {consoleOutput.map((entry, index) => (
+                    <Text 
+                      key={index} 
+                      c={entry.type === 'error' ? 'red' : entry.type === 'input' ? 'cyan' : 'green'}
+                      style={{ whiteSpace: 'pre-wrap' }}
+                    >
+                      {entry.content}
+                    </Text>
+                  ))}
+                </Stack>
+              )}
+            </Paper>
+            
+            <Group gap="xs">
+              <TextInput
+                value={consoleInput}
+                onChange={(e) => setConsoleInput(e.target.value)}
+                placeholder="Enter Hardhat command..."
+                style={{ flex: 1 }}
+                onKeyPress={(e) => e.key === 'Enter' && handleConsoleCommand()}
+                size="sm"
+              />
+              <Button 
+                onClick={handleConsoleCommand}
+                size="sm"
+                disabled={!consoleInput.trim()}
+              >
+                Run
+              </Button>
+            </Group>
+            
+                          <Paper p="sm" withBorder style={{ backgroundColor: 'var(--mantine-color-blue-0)' }}>
+                <Text size="xs" fw={600} mb="xs">Quick Commands:</Text>
+                <Stack gap="xs">
+                  <Group gap="xs">
+                    <Button 
+                      size="xs" 
+                      variant="subtle"
+                      onClick={() => setConsoleInput('return await ethers.getSigners()')}
+                    >
+                      Get Signers
+                    </Button>
+                    <Button 
+                      size="xs" 
+                      variant="subtle"
+                      onClick={() => setConsoleInput('return await provider.getBlockNumber()')}
+                    >
+                      Block Number
+                    </Button>
+                    <Button 
+                      size="xs" 
+                      variant="subtle"
+                      onClick={() => setConsoleInput('return await provider.getNetwork()')}
+                    >
+                      Network Info
+                    </Button>
+                    <Button 
+                      size="xs" 
+                      variant="subtle"
+                      onClick={() => setConsoleInput('const signers = await ethers.getSigners(); return signers.map(s => s.address)')}
+                    >
+                      All Addresses
+                    </Button>
+                  </Group>
+                  <Group gap="xs">
+                    <Button 
+                      size="xs" 
+                      variant="subtle"
+                      onClick={() => setConsoleInput('const [owner] = await ethers.getSigners(); const balance = await provider.getBalance(owner.address); return ethers.formatEther(balance) + " ETH"')}
+                    >
+                      Owner Balance
+                    </Button>
+                    <Button 
+                      size="xs" 
+                      variant="subtle"
+                      onClick={() => setConsoleInput('const gasPrice = await provider.getGasPrice(); return ethers.formatUnits(gasPrice, "gwei") + " gwei"')}
+                    >
+                      Gas Price
+                    </Button>
+                    <Button 
+                      size="xs" 
+                      variant="subtle"
+                      onClick={() => setConsoleInput('const block = await provider.getBlock("latest"); return { number: block.number, timestamp: new Date(block.timestamp * 1000).toISOString(), gasUsed: block.gasUsed.toString() }')}
+                    >
+                      Latest Block
+                    </Button>
+                    <Button 
+                      size="xs" 
+                      variant="subtle"
+                      onClick={() => setConsoleInput('return ethers.parseEther("1.0").toString() + " wei = 1 ETH"')}
+                    >
+                      Parse ETH
+                    </Button>
+                  </Group>
+                </Stack>
+              </Paper>
+          </Stack>
         )}
+      </Card>
+    );
+  };
 
-        <button 
-          onClick={handleSelectProject} 
-          disabled={isManaging}
-          className="action-btn select-btn"
-        >
-          📁 Select Project Directory
-        </button>
-
-        {selectedProjectPath && !hardhatStatus?.project_detected && (
-          <button 
-            onClick={handleCreateProject} 
-            disabled={isManaging}
-            className="action-btn create-btn"
-          >
-            🆕 Create Hardhat Project
-          </button>
-        )}
-
-        {hardhatStatus?.project_detected && !hardhatStatus?.network_running && (
-          <button 
-            onClick={handleStartNetwork} 
-            disabled={isManaging}
-            className="action-btn start-btn"
-          >
-            🚀 Start Network
-          </button>
-        )}
-      </div>
-
-      {selectedProjectPath && (
-        <div className="project-path">
-          <strong>Selected Path:</strong> <code>{selectedProjectPath}</code>
-        </div>
-      )}
-    </div>
-  );
+  // Render current section
+  const renderCurrentSection = () => {
+    switch (activeSection) {
+      case 'management':
+        return renderHardhatManagement();
+      case 'network':
+        return renderNetworkInfo();
+      case 'accounts':
+        return renderAccounts();
+      case 'contracts':
+        return renderContracts();
+      case 'transactions':
+        return renderTransactions();
+      case 'console':
+        return renderHardhatConsole();
+      default:
+        return renderHardhatManagement();
+    }
+  };
 
   if (loading) {
     return (
-      <div className="container">
-        <div className="loading">
-          <h2>🔄 Loading Hardhat GUI...</h2>
-          <p>Checking system status...</p>
-        </div>
-      </div>
+      <Container h="100vh">
+        <Center h="100%">
+          <Stack align="center" gap="md">
+            <Loader size="xl" />
+            <Title order={2} c="orange">🔄 Loading Hardhat GUI...</Title>
+            <Text c="dimmed">Checking system status...</Text>
+          </Stack>
+        </Center>
+      </Container>
     );
   }
 
   return (
-    <div className="container">
-      <header className="header">
-        <h1>🔨 Hardhat GUI</h1>
-        <button onClick={handleRefresh} className="refresh-btn">
-          🔄 Refresh
-        </button>
-      </header>
+    <AppShell
+      header={{ height: 60 }}
+      navbar={{ width: 300, breakpoint: 'sm', collapsed: { mobile: !opened } }}
+      padding="md"
+    >
+      <AppShell.Header>
+        <Group h="100%" px="md" justify="space-between">
+          <Group>
+            <Burger opened={opened} onClick={toggle} hiddenFrom="sm" size="sm" />
+            <Title order={1} c="orange">🔨 Hardhat GUI</Title>
+          </Group>
+          <Group>
+            <ThemeToggle />
+            <Button 
+              onClick={toggleAutoRefresh} 
+              leftSection={autoRefresh ? "⏸️" : "🔄"} 
+              size="sm"
+              variant={autoRefresh ? "filled" : "default"}
+              color={autoRefresh ? "green" : undefined}
+            >
+              {autoRefresh ? "Auto" : "Manual"}
+            </Button>
+            <Button onClick={handleRefresh} leftSection="🔄" size="sm" variant="subtle">
+              Refresh
+            </Button>
+          </Group>
+        </Group>
+      </AppShell.Header>
 
-      {renderHardhatManagement()}
+      <AppShell.Navbar p="md">
+        <Stack gap="xs">
+          <NavLink
+            label="Hardhat Management"
+            leftSection="🔨"
+            active={activeSection === 'management'}
+            onClick={() => setActiveSection('management')}
+            variant="filled"
+          />
+          <NavLink
+            label="Network Information"
+            leftSection="📡"
+            active={activeSection === 'network'}
+            onClick={() => setActiveSection('network')}
+            variant="filled"
+          />
+          <NavLink
+            label="Local Accounts"
+            leftSection="💰"
+            active={activeSection === 'accounts'}
+            onClick={() => setActiveSection('accounts')}
+            variant="filled"
+          />
+          <NavLink
+            label="Smart Contracts"
+            leftSection="📋"
+            active={activeSection === 'contracts'}
+            onClick={() => setActiveSection('contracts')}
+            variant="filled"
+          />
+          <NavLink
+            label="Transactions"
+            leftSection="📜"
+            active={activeSection === 'transactions'}
+            onClick={() => setActiveSection('transactions')}
+            variant="filled"
+          />
+          <NavLink
+            label="Hardhat Console"
+            leftSection="⚡"
+            active={activeSection === 'console'}
+            onClick={() => setActiveSection('console')}
+            variant="filled"
+          />
+        </Stack>
+      </AppShell.Navbar>
 
-      {error && (
-        <div className="error-banner">
-          <h3>⚠️ Error</h3>
-          <p>{error}</p>
-          <button onClick={() => setError(null)} className="dismiss-btn">
-            Dismiss
-          </button>
-        </div>
-      )}
+      <AppShell.Main>
+        <Stack gap="md">
+          {error && (
+            <Alert variant="light" color="red" title="Error" withCloseButton onClose={() => setError(null)}>
+              {error}
+            </Alert>
+          )}
 
-      {networkInfo && (
-        <div className="network-info">
-          <h3>📡 Network Information</h3>
-          <div className="info-grid">
-            <div className="info-item">
-              <span className="label">Network:</span>
-              <span className="value">{networkInfo.name || 'Hardhat Local'}</span>
-            </div>
-            <div className="info-item">
-              <span className="label">Chain ID:</span>
-              <span className="value">{networkInfo.chainId}</span>
-            </div>
-            <div className="info-item">
-              <span className="label">Block Number:</span>
-              <span className="value">{networkInfo.blockNumber}</span>
-            </div>
-          </div>
-        </div>
-      )}
+          {renderCurrentSection()}
 
-      {accounts.length > 0 && (
-        <div className="accounts-section">
-          <h3>💰 Local Accounts ({accounts.length})</h3>
-          <div className="accounts-grid">
-            {accounts.map((account, index) => (
-              <div key={account.address} className="account-card">
-                <div className="account-header">
-                  <span className="account-index">#{index}</span>
-                  <span className="account-balance">{parseFloat(account.balance).toFixed(4)} ETH</span>
-                </div>
-                <div className="account-address">
-                  <code>{account.address}</code>
-                </div>
-                <div className="account-short">
-                  {account.shortAddress}
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
+          <Text ta="center" c="dimmed" size="sm" mt="md">
+            🚀 Built with Tauri + React + Mantine
+          </Text>
+        </Stack>
+      </AppShell.Main>
+    </AppShell>
+  );
+}
 
-      <footer className="footer">
-        <p>🚀 Built with Tauri + React</p>
-      </footer>
-    </div>
+function App() {
+  return (
+    <>
+      <ColorSchemeScript />
+      <MantineProvider defaultColorScheme="auto">
+        <Notifications />
+        <HardhatApp />
+      </MantineProvider>
+    </>
   );
 }
 

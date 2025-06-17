@@ -38,26 +38,11 @@
   },
   "plugins": {
     "shell": {
-      "open": true,
-      "scope": [
-        {
-          "name": "npm",
-          "cmd": "npm",
-          "args": true
-        },
-        {
-          "name": "npx",
-          "cmd": "npx", 
-          "args": true
-        }
-      ]
+      "open": true
     },
     "fs": {
-      "scope": ["**"]
+      "requireLiteralLeadingDot": false
     },
-    "dialog": {
-      "open": true,
-      "save": true
-    }
+    "dialog": null
   }
 }
